@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import NetInfo, { type NetInfoState } from '@react-native-community/netinfo';
 
 function conectado(estado: NetInfoState): boolean {
-  return estado.isConnected !== false && estado.isInternetReachable !== false;
+  return estado.isConnected !== false;
 }
 
 export function useOnline(): boolean {

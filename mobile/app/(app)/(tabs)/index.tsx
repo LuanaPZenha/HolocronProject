@@ -38,7 +38,8 @@ export default function Enciclopedia() {
   const [texto, setTexto] = useState('');
   const [consulta, setConsulta] = useState('');
   const [itens, setItens] = useState<EntradaResumo[]>([]);
-  const [fonte, setFonte] = useState<EntradaResumo[]>([]);
+  const [acervo, setAcervo] = useState<EntradaResumo[]>([]);
+  const categoriaVista = useRef(categoria);
   const [total, setTotal] = useState(0);
   const [paginaAtual, setPaginaAtual] = useState(1);
   const [temMais, setTemMais] = useState(false);
@@ -74,9 +75,13 @@ export default function Enciclopedia() {
     async function carregar() {
       setCarregando(true);
       setErro(null);
-      setItens([]);
       setCarregandoMais(false);
       trava.current = false;
+      if (categoriaVista.current !== categoria) {
+        setItens([]);
+        setAcervo([]);
+        categoriaVista.current = categoria;
+      }
       try {
         if (consulta) {
           const indice = await indiceCategoria(categoria);
@@ -84,7 +89,7 @@ export default function Enciclopedia() {
             return;
           }
           const filtrado = filtrarPorNome(indice, consulta);
-          setFonte(filtrado);
+          setAcervo(filtrado);
           setItens(filtrado.slice(0, 20));
           setTotal(filtrado.length);
           setTemMais(filtrado.length > 20);
@@ -94,7 +99,7 @@ export default function Enciclopedia() {
           if (cancelado || ticket !== pedido.current) {
             return;
           }
-          setFonte([]);
+          setAcervo([]);
           setItens(pagina.data);
           setTotal(pagina.info.total);
           setPaginaAtual(1);
@@ -130,8 +135,8 @@ export default function Enciclopedia() {
     try {
       if (modo === 'busca') {
         const proximo = itens.length + 20;
-        setItens(fonte.slice(0, proximo));
-        setTemMais(proximo < fonte.length);
+        setItens(acervo.slice(0, proximo));
+        setTemMais(proximo < acervo.length);
       } else {
         const proxima = paginaAtual + 1;
         const pagina = await listarPagina(categoria, proxima);

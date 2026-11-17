@@ -79,18 +79,27 @@ export async function listarPagina(categoria: Categoria, page: number): Promise<
 
 export async function indiceCategoria(categoria: Categoria): Promise<EntradaResumo[]> {
   return comCache(`indice_${categoria}`, async () => {
+    const primeira = paginaDe(await pedir(`/${categoria}`, { page: 1, limit: 100 }), 1);
+    const total = primeira.info.total > 0 ? primeira.info.total : primeira.data.length;
+    const paginas = Math.min(40, Math.max(1, Math.ceil(total / 100)));
+    const restantes =
+      paginas === 1
+        ? []
+        : await Promise.all(
+            Array.from({ length: paginas - 1 }, (_, indice) =>
+              pedir(`/${categoria}`, { page: indice + 2, limit: 100 }).then((dados) => paginaDe(dados, indice + 2)),
+            ),
+          );
+
+    const vistos = new Set<string>();
     const todos: EntradaResumo[] = [];
-    let page = 1;
-    let seguir = true;
-
-    while (seguir && page <= 40) {
-      const dados = await pedir(`/${categoria}`, { page, limit: 100 });
-      const pagina = paginaDe(dados, page);
-      todos.push(...pagina.data);
-      seguir = Boolean(pagina.info.next);
-      page += 1;
+    for (const item of [primeira, ...restantes].flatMap((pagina) => pagina.data)) {
+      if (vistos.has(item._id)) {
+        continue;
+      }
+      vistos.add(item._id);
+      todos.push(item);
     }
-
     return todos;
   });
 }

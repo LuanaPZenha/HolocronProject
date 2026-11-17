@@ -41,6 +41,20 @@ export function texto(valor: unknown, campo: string, maximo: number): string | {
   return limpo;
 }
 
+export function textoOpcional(valor: unknown, campo: string, maximo: number): string | { erro: string } {
+  if (valor === undefined || valor === null || valor === '') {
+    return '';
+  }
+  if (typeof valor !== 'string') {
+    return { erro: `${campo} é obrigatório.` };
+  }
+  const limpo = valor.trim();
+  if (limpo.length > maximo) {
+    return { erro: `${campo} passa de ${maximo} caracteres.` };
+  }
+  return limpo;
+}
+
 export function emailValido(valor: unknown): string | { erro: string } {
   const lido = texto(valor, 'E-mail', 254);
   if (typeof lido !== 'string') {

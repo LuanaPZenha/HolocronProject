@@ -91,10 +91,25 @@ export function HolocronProvider({ children }: { children: ReactNode }) {
   const [conflitos, setConflitos] = useState<ConflitoEstudo[]>([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
+  const arquivosRef = useRef(arquivos);
+  const decksRef = useRef(decks);
   const onlineRef = useRef(online);
   onlineRef.current = online;
   const geracao = useRef(0);
+  const sessao = useRef(0);
   const cadeia = useRef(Promise.resolve());
+
+  const publicarArquivos = useCallback((proximo: ArquivoHolocron[] | ((atual: ArquivoHolocron[]) => ArquivoHolocron[])) => {
+    const lista = typeof proximo === 'function' ? proximo(arquivosRef.current) : proximo;
+    arquivosRef.current = lista;
+    setArquivos(lista);
+  }, []);
+
+  const publicarDecks = useCallback((proximo: DeckUsuario[] | ((atual: DeckUsuario[]) => DeckUsuario[])) => {
+    const lista = typeof proximo === 'function' ? proximo(decksRef.current) : proximo;
+    decksRef.current = lista;
+    setDecks(lista);
+  }, []);
 
   const emSerie = useCallback(<T,>(tarefa: () => Promise<T>): Promise<T> => {
     const execucao = cadeia.current.then(tarefa, tarefa);
@@ -107,99 +122,125 @@ export function HolocronProvider({ children }: { children: ReactNode }) {
 
   const aplicarLocais = useCallback(async () => {
     const locais = await listarLocais();
-    setArquivos(locais);
-    setDecks(await listarDecks());
+    publicarArquivos(locais);
+    publicarDecks(await listarDecks());
     return locais;
-  }, []);
+  }, [publicarArquivos, publicarDecks]);
 
-  const sincronizar = useCallback(async () => {
-    await emSerie(async () => {
-      if (!onlineRef.current) {
-        return;
-      }
-      await sincronizarFila();
-      const remotosDecks = await puxarDecks();
-      if (remotosDecks) {
-        await substituirDecks(remotosDecks);
-        setDecks(remotosDecks);
-      }
-      const pendentes = await contarFila();
-      if (pendentes > 0) {
+  const alinharRef = useRef<() => Promise<void>>(async () => undefined);
+
+  alinharRef.current = async () => {
+    const marca = sessao.current;
+    if (!onlineRef.current || marca !== sessao.current) {
+      return;
+    }
+    await sincronizarFila();
+    if (marca !== sessao.current) {
+      return;
+    }
+    const remotosDecks = await puxarDecks();
+    if (marca !== sessao.current) {
+      return;
+    }
+    if (remotosDecks) {
+      await substituirDecks(remotosDecks);
+      publicarDecks(remotosDecks);
+    }
+    const pendentes = await contarFila();
+    if (pendentes > 0) {
+      if (marca === sessao.current) {
         await aplicarLocais();
+      }
+      return;
+    }
+    const remotos = await puxarServidor();
+    if (!remotos || marca !== sessao.current) {
+      return;
+    }
+    const locais = await listarLocais();
+    const { mantidos, conflitos: achados } = reconciliar(locais, remotos);
+    const politicaBruta = await ler<unknown>(CHAVES.politica);
+    const politica: PoliticaConflito = ehPolitica(politicaBruta) ? politicaBruta : 'manual';
+    if (politica === 'manual') {
+      if (marca !== sessao.current) {
         return;
       }
-      const remotos = await puxarServidor();
-      if (!remotos) {
-        return;
-      }
-      const locais = await listarLocais();
-      const { mantidos, conflitos: achados } = reconciliar(locais, remotos);
-      const politicaBruta = await ler<unknown>(CHAVES.politica);
-      const politica: PoliticaConflito = ehPolitica(politicaBruta) ? politicaBruta : 'manual';
-      if (politica === 'manual') {
-        setConflitos(await acrescentarConflitos(achados));
-        await substituirLocais(mantidos);
-        setArquivos(mantidos);
-        return;
-      }
-      const resolvidos = await Promise.all(
-        achados.map(async (item) => {
-          const escolhido = politica === 'ultima' ? ultimaEscrita(item.local, item.remoto) : mesclar(item.local, item.remoto);
-          await salvarLocal(escolhido);
-          if (!mesmoEstudo(escolhido, item.remoto)) {
-            try {
-              await backendApi.put(`/arquivos/${encodeURIComponent(item.itemId)}`, {
-                status: escolhido.status,
-                progresso: escolhido.progresso,
-                nota: escolhido.nota,
-                anotacao: escolhido.anotacao,
-                deck: escolhido.deck,
-                deck_id: escolhido.deck_id,
-              });
-            } catch {
-              await enfileirar('atualizar', item.itemId, escolhido);
-            }
+      setConflitos(await acrescentarConflitos(achados));
+      await substituirLocais(mantidos);
+      publicarArquivos(mantidos);
+      return;
+    }
+    const resolvidos = await Promise.all(
+      achados.map(async (item) => {
+        const escolhido = politica === 'ultima' ? ultimaEscrita(item.local, item.remoto) : mesclar(item.local, item.remoto);
+        await salvarLocal(escolhido);
+        if (!mesmoEstudo(escolhido, item.remoto)) {
+          try {
+            await backendApi.put(`/arquivos/${encodeURIComponent(item.itemId)}`, {
+              status: escolhido.status,
+              progresso: escolhido.progresso,
+              nota: escolhido.nota,
+              anotacao: escolhido.anotacao,
+              deck: escolhido.deck,
+              deck_id: escolhido.deck_id,
+            });
+          } catch {
+            await enfileirar('atualizar', item.itemId, escolhido);
           }
-          await removerConflito(item.itemId);
-          return escolhido;
-        }),
-      );
-      const porId = new Map(mantidos.map((item) => [item.item_id, item]));
-      for (const item of resolvidos) {
-        porId.set(item.item_id, item);
-      }
-      const lista = [...porId.values()];
-      await substituirLocais(lista);
-      setArquivos(lista);
-      setConflitos(await listarConflitos());
-    });
-  }, [aplicarLocais, emSerie]);
+        }
+        await removerConflito(item.itemId);
+        return escolhido;
+      }),
+    );
+    if (marca !== sessao.current) {
+      return;
+    }
+    const porId = new Map(mantidos.map((item) => [item.item_id, item]));
+    for (const item of resolvidos) {
+      porId.set(item.item_id, item);
+    }
+    const lista = [...porId.values()];
+    await substituirLocais(lista);
+    publicarArquivos(lista);
+    setConflitos(await listarConflitos());
+  };
+
+  const sincronizar = useCallback(() => emSerie(() => alinharRef.current()), [emSerie]);
 
   const recarregar = useCallback(async () => {
     const ticket = geracao.current;
+    const marca = sessao.current;
     setCarregando(true);
     setErro(null);
-    try {
-      await iniciarBanco();
-      await aplicarLocais();
-      setConflitos(await listarConflitos());
-      if (ticket !== geracao.current) {
+    await emSerie(async () => {
+      if (marca !== sessao.current) {
         return;
       }
-      setCarregando(false);
-      await sincronizar();
-    } catch (falha) {
-      if (ticket !== geracao.current) {
-        return;
+      try {
+        await iniciarBanco();
+        await aplicarLocais();
+        setConflitos(await listarConflitos());
+        if (ticket !== geracao.current || marca !== sessao.current) {
+          return;
+        }
+        setCarregando(false);
+        await alinharRef.current();
+      } catch (falha) {
+        if (ticket !== geracao.current || marca !== sessao.current) {
+          return;
+        }
+        setErro(falha instanceof Error ? falha.message : 'Não foi possível abrir o arquivo local.');
+        setCarregando(false);
       }
-      setErro(falha instanceof Error ? falha.message : 'Não foi possível abrir o arquivo local.');
-      setCarregando(false);
-    }
-  }, [aplicarLocais, sincronizar]);
+    });
+  }, [aplicarLocais, emSerie]);
 
   useEffect(() => {
+    sessao.current += 1;
     geracao.current += 1;
     if (!usuario) {
+      arquivosRef.current = [];
+      decksRef.current = [];
       setArquivos([]);
       setDecks([]);
       setConflitos([]);
@@ -218,6 +259,7 @@ export function HolocronProvider({ children }: { children: ReactNode }) {
   }, [online, usuario, sincronizar]);
 
   const criarDeck = useCallback(async (nome: string, faccao: DeckId) => {
+    const marca = sessao.current;
     const limpo = nome.trim();
     if (limpo.length < 2) {
       throw new Error('Dê um nome ao deck.');
@@ -226,17 +268,21 @@ export function HolocronProvider({ children }: { children: ReactNode }) {
       throw new Error('Conecte-se para criar um deck.');
     }
     const resposta = await backendApi.post<DeckUsuario>('/decks', { nome: limpo, faccao });
+    if (marca !== sessao.current) {
+      throw new Error('A sessão mudou antes do deck ser gravado.');
+    }
     const deck = resposta.data;
     if (!deck?.id || deck.faccao !== faccao) {
       throw new Error('Não foi possível criar o deck.');
     }
     const gravado: DeckUsuario = { id: deck.id, nome: deck.nome, faccao };
     await salvarDeck(gravado);
-    setDecks((atual) => [gravado, ...atual.filter((item) => item.id !== gravado.id)]);
+    publicarDecks((atual) => [gravado, ...atual.filter((item) => item.id !== gravado.id)]);
     return gravado;
-  }, []);
+  }, [publicarDecks]);
 
   const removerDeck = useCallback(async (id: string) => {
+    const marca = sessao.current;
     if (!onlineRef.current) {
       throw new Error('Conecte-se para apagar um deck.');
     }
@@ -245,15 +291,69 @@ export function HolocronProvider({ children }: { children: ReactNode }) {
     } catch (falha) {
       throw new Error(mensagemHttp(falha, 'Não foi possível apagar o deck.'));
     }
+    if (marca !== sessao.current) {
+      return;
+    }
     await removerDeckLocal(id);
-    setDecks((atual) => atual.filter((item) => item.id !== id));
-  }, []);
+    publicarDecks((atual) => atual.filter((item) => item.id !== id));
+  }, [publicarDecks]);
+
+  const aplicarAtualizacaoRef = useRef<(itemId: string, patch: Atualizacao) => Promise<void>>(async () => undefined);
+
+  aplicarAtualizacaoRef.current = async (itemId, patch) => {
+    const marca = sessao.current;
+    const atual = arquivosRef.current.find((item) => item.item_id === itemId);
+    if (!atual) {
+      throw new Error('Essa entrada não está no Holocron.');
+    }
+    const registro: ArquivoHolocron = {
+      ...atual,
+      ...patch,
+      updated_at: agora(),
+    };
+    publicarArquivos((lista) => lista.map((item) => (item.item_id === itemId ? registro : item)));
+    await salvarLocal(registro);
+    if (marca !== sessao.current) {
+      return;
+    }
+
+    if (!onlineRef.current) {
+      await enfileirar('atualizar', itemId, registro);
+      return;
+    }
+
+    try {
+      await backendApi.put(`/arquivos/${encodeURIComponent(itemId)}`, {
+        status: registro.status,
+        progresso: registro.progresso,
+        nota: registro.nota,
+        anotacao: registro.anotacao,
+        deck: registro.deck,
+        deck_id: registro.deck_id,
+      });
+    } catch (falha) {
+      if (marca !== sessao.current) {
+        return;
+      }
+      const status = statusHttp(falha);
+      if (status === 400 || status === 401) {
+        publicarArquivos((lista) => lista.map((item) => (item.item_id === itemId ? atual : item)));
+        await salvarLocal(atual);
+        throw new Error(mensagemHttp(falha, 'Não foi possível atualizar o estudo.'));
+      }
+      await enfileirar('atualizar', itemId, registro);
+    }
+  };
 
   const adicionar = useCallback(async ({ entrada, categoria, deckId }: NovoArquivo) => emSerie(async () => {
+    const marca = sessao.current;
+    if (marca !== sessao.current) {
+      return;
+    }
     if (!ehCategoria(categoria)) {
       throw new Error('Categoria inválida.');
     }
-    const baralho = decks.find((item) => item.id === deckId);
+    const baralho = decksRef.current.find((item) => item.id === deckId);
     const lado = ladoDaCarta(`${entrada.name}\n${entrada.description}`);
     if (!lado) {
       throw new Error('Esta carta não pertence a um lado.');
@@ -264,7 +364,7 @@ export function HolocronProvider({ children }: { children: ReactNode }) {
     if (!entrada.image) {
       throw new Error('Essa ficha não tem imagem oficial para arquivar.');
     }
-    if (arquivos.some((item) => item.item_id === entrada._id)) {
+    if (arquivosRef.current.some((item) => item.item_id === entrada._id)) {
       throw new Error('Essa carta já está em um deck.');
     }
 
@@ -283,12 +383,15 @@ export function HolocronProvider({ children }: { children: ReactNode }) {
       updated_at: agora(),
     };
 
-    setArquivos((atual) => [registro, ...atual.filter((item) => item.item_id !== registro.item_id)]);
+    publicarArquivos((atual) => [registro, ...atual.filter((item) => item.item_id !== registro.item_id)]);
     await salvarLocal(registro);
+    if (marca !== sessao.current) {
+      return;
+    }
     void guardarCapa(registro.item_id, registro.imagem_url);
 
     const reverter = async (mensagem: string) => {
-      setArquivos((atual) => atual.filter((item) => item.item_id !== registro.item_id));
+      publicarArquivos((atual) => atual.filter((item) => item.item_id !== registro.item_id));
       await removerLocal(registro.item_id);
       throw new Error(mensagem);
     };
@@ -301,6 +404,9 @@ export function HolocronProvider({ children }: { children: ReactNode }) {
     try {
       await backendApi.post('/arquivos', registro);
     } catch (falha) {
+      if (marca !== sessao.current) {
+        return;
+      }
       const status = statusHttp(falha);
       if (status === 409) {
         return;
@@ -311,62 +417,36 @@ export function HolocronProvider({ children }: { children: ReactNode }) {
       }
       await enfileirar('criar', registro.item_id, registro);
     }
-  }), [arquivos, decks, emSerie]);
+  }), [emSerie, publicarArquivos]);
 
-  const atualizar = useCallback(async (itemId: string, patch: Atualizacao) => emSerie(async () => {
-    const atual = arquivos.find((item) => item.item_id === itemId);
-    if (!atual) {
-      throw new Error('Essa entrada não está no Holocron.');
-    }
-    const registro: ArquivoHolocron = {
-      ...atual,
-      ...patch,
-      updated_at: agora(),
-    };
-    setArquivos((lista) => lista.map((item) => (item.item_id === itemId ? registro : item)));
-    await salvarLocal(registro);
+  const atualizar = useCallback(
+    (itemId: string, patch: Atualizacao) => emSerie(() => aplicarAtualizacaoRef.current(itemId, patch)),
+    [emSerie],
+  );
 
-    if (!onlineRef.current) {
-      await enfileirar('atualizar', itemId, registro);
-      return;
-    }
-
-    try {
-      await backendApi.put(`/arquivos/${encodeURIComponent(itemId)}`, {
-        status: registro.status,
-        progresso: registro.progresso,
-        nota: registro.nota,
-        anotacao: registro.anotacao,
-        deck: registro.deck,
-        deck_id: registro.deck_id,
-      });
-    } catch (falha) {
-      const status = statusHttp(falha);
-      if (status === 400 || status === 401) {
-        setArquivos((lista) => lista.map((item) => (item.item_id === itemId ? atual : item)));
-        await salvarLocal(atual);
-        throw new Error(mensagemHttp(falha, 'Não foi possível atualizar o estudo.'));
-      }
-      await enfileirar('atualizar', itemId, registro);
-    }
-  }), [arquivos, emSerie]);
-
-  const incrementar = useCallback(async (itemId: string) => {
-    const atual = arquivos.find((item) => item.item_id === itemId);
-    if (!atual) {
-      throw new Error('Essa entrada não está no Holocron.');
-    }
-    const progresso = Math.min(100, atual.progresso + 25);
-    await atualizar(itemId, { progresso });
-  }, [arquivos, atualizar]);
+  const incrementar = useCallback(
+    (itemId: string) =>
+      emSerie(async () => {
+        const atual = arquivosRef.current.find((item) => item.item_id === itemId);
+        if (!atual) {
+          throw new Error('Essa entrada não está no Holocron.');
+        }
+        await aplicarAtualizacaoRef.current(itemId, { progresso: Math.min(100, atual.progresso + 25) });
+      }),
+    [emSerie],
+  );
 
   const remover = useCallback(async (itemId: string) => emSerie(async () => {
-    const atual = arquivos.find((item) => item.item_id === itemId);
+    const marca = sessao.current;
+    const atual = arquivosRef.current.find((item) => item.item_id === itemId);
     if (!atual) {
       return;
     }
-    setArquivos((lista) => lista.filter((item) => item.item_id !== itemId));
+    publicarArquivos((lista) => lista.filter((item) => item.item_id !== itemId));
     await removerLocal(itemId);
+    if (marca !== sessao.current) {
+      return;
+    }
 
     if (!onlineRef.current) {
       await enfileirar('remover', itemId, atual);
@@ -376,18 +456,21 @@ export function HolocronProvider({ children }: { children: ReactNode }) {
     try {
       await backendApi.delete(`/arquivos/${encodeURIComponent(itemId)}`);
     } catch (falha) {
+      if (marca !== sessao.current) {
+        return;
+      }
       const status = statusHttp(falha);
       if (status === 404) {
         return;
       }
       if (status === 400 || status === 401) {
-        setArquivos((lista) => [atual, ...lista.filter((item) => item.item_id !== itemId)]);
+        publicarArquivos((lista) => [atual, ...lista.filter((item) => item.item_id !== itemId)]);
         await salvarLocal(atual);
         throw new Error(mensagemHttp(falha, 'Não foi possível remover.'));
       }
       await enfileirar('remover', itemId, atual);
     }
-  }), [arquivos, emSerie]);
+  }), [emSerie, publicarArquivos]);
 
   const contagem = useMemo(() => {
     const base = { ...CONTAGEM_VAZIA };

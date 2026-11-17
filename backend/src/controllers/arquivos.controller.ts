@@ -14,6 +14,7 @@ import {
   inteiroEntre,
   statusValido,
   texto,
+  textoOpcional,
   type DeckId,
   type StatusEstudo,
 } from '../utils/validar';
@@ -70,7 +71,7 @@ export function criar(req: RequisicaoAutenticada, res: Response): void {
   const categoria = categoriaValida(req.body?.categoria);
   const nome = texto(req.body?.nome, 'Nome', 200);
   const imagem = texto(req.body?.imagem_url, 'Imagem', 2000);
-  const descricao = texto(req.body?.descricao, 'Descrição', 8000);
+  const descricao = textoOpcional(req.body?.descricao, 'Descrição', 8000);
 
   if (falhou(itemId) || falhou(categoria) || falhou(nome) || falhou(imagem) || falhou(descricao)) {
     const primeiro = [itemId, categoria, nome, imagem, descricao].find(falhou);

@@ -2,6 +2,7 @@
   "expo": {
     "name": "Holocron",
     "slug": "holocron",
+    "owner": "kapitour",
     "version": "1.0.0",
     "orientation": "portrait",
     "scheme": "holocron",
@@ -12,6 +13,7 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.holocron.app",
       "adaptiveIcon": {
         "backgroundColor": "#07090C",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -36,10 +38,21 @@
         {
           "android": {
             "enableProguardInReleaseBuilds": true,
-            "extraProguardRules": "-keep class com.facebook.hermes.unicode.** { *; }\n-keep class com.facebook.jni.** { *; }"
+            "extraProguardRules": "-keep class com.facebook.hermes.unicode.** { *; }\n-keep class com.facebook.jni.** { *; }",
+            "enableMinifyInReleaseBuilds": true
           }
         }
       ]
-    ]
+    ],
+    "extra": {
+      "router": {
+        "asyncRoutes": {
+          "web": true
+        }
+      },
+      "eas": {
+        "projectId": "b1ca9ba3-2320-4260-9789-754de6749a81"
+      }
+    }
   }
 }
